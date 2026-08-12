@@ -1,6 +1,4 @@
-
 pipeline {
-
     agent {
         docker {
             image 'jibin321/maven-docker-agent:v2'
@@ -11,7 +9,8 @@ pipeline {
     environment {
         DOCKER_IMAGE = 'shaunjohnmathew/spring-boot-app'
         DOCKER_CREDENTIALS = 'docker-cred'
-        GITHUB_CREDENTIALS = 'github'
+        GITHUB_CREDENTIALS = 'github-credentials'
+        SONARQUBE_SERVER = 'sonarqube'
     }
 
     stages {
@@ -31,6 +30,14 @@ pipeline {
                     echo ""
                     echo "Project files:"
                     ls -la
+
+                    echo ""
+                    echo "Spring Boot project:"
+                    ls -la spring-boot-app
+
+                    echo ""
+                    echo "Checking pom.xml:"
+                    ls -l spring-boot-app/pom.xml
                 '''
             }
         }
@@ -48,25 +55,34 @@ pipeline {
                     echo ""
                     echo "Building application..."
 
+                    cd spring-boot-app
+
                     mvn clean package
+
+                    echo ""
+                    echo "Build completed successfully."
+
+                    echo ""
+                    echo "Generated files:"
+                    ls -lh target/
                 '''
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-
                 echo '========================================='
                 echo 'Running SonarQube Analysis'
                 echo '========================================='
 
-                withSonarQubeEnv('sonarqube') {
-
+                withSonarQubeEnv("${SONARQUBE_SERVER}") {
                     sh '''
+                        cd spring-boot-app
+
                         mvn sonar:sonar \
                             -Dsonar.projectKey=spring-boot-app \
                             -Dsonar.projectName="Spring Boot App" \
-                            -Dsonar.host.url=$SONAR_HOST_URL
+                            -Dsonar.host.url="$SONAR_HOST_URL"
                     '''
                 }
             }
@@ -74,7 +90,6 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-
                 echo '========================================='
                 echo 'Building Docker Image'
                 echo '========================================='
@@ -89,10 +104,10 @@ pipeline {
                     docker build \
                         -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
                         -t ${DOCKER_IMAGE}:latest \
-                        .
+                        spring-boot-app
 
                     echo ""
-                    echo "Docker image created successfully."
+                    echo "Docker image built successfully."
 
                     docker images | grep spring-boot-app
                 '''
@@ -101,131 +116,108 @@ pipeline {
 
         stage('Push Docker Image') {
             steps {
-
                 echo '========================================='
                 echo 'Pushing Docker Image to Docker Hub'
                 echo '========================================='
 
-                script {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${DOCKER_CREDENTIALS}",
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        echo "$DOCKER_PASSWORD" | docker login \
+                            -u "$DOCKER_USERNAME" \
+                            --password-stdin
 
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: "${DOCKER_CREDENTIALS}",
-                            usernameVariable: 'DOCKER_USERNAME',
-                            passwordVariable: 'DOCKER_PASSWORD'
-                        )
-                    ]) {
+                        echo "Pushing version ${BUILD_NUMBER}..."
 
-                        sh '''
-                            echo "Logging in to Docker Hub..."
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
-                            echo "$DOCKER_PASSWORD" | docker login \
-                                -u "$DOCKER_USERNAME" \
-                                --password-stdin
+                        echo "Pushing latest..."
 
-                            echo "Pushing image: ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                        docker push ${DOCKER_IMAGE}:latest
 
-                            docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        docker logout
 
-                            echo "Pushing latest image..."
-
-                            docker push ${DOCKER_IMAGE}:latest
-
-                            echo "Docker images pushed successfully."
-
-                            docker logout
-                        '''
-                    }
+                        echo "Docker images pushed successfully."
+                    '''
                 }
             }
         }
 
         stage('Update Kubernetes Deployment') {
             steps {
-
                 echo '========================================='
                 echo 'Updating Kubernetes Deployment'
                 echo '========================================='
 
-                script {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${GITHUB_CREDENTIALS}",
+                        usernameVariable: 'GIT_USERNAME',
+                        passwordVariable: 'GIT_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        echo "Checking deployment file..."
 
-                    withCredentials([
-                        string(
-                            credentialsId: "${GITHUB_CREDENTIALS}",
-                            variable: 'GITHUB_TOKEN'
-                        )
-                    ]) {
+                        ls -l spring-boot-app-manifests/
 
-                        sh '''
-                            echo "Checking deployment file..."
+                        echo ""
+                        echo "Current image:"
+                        grep "image:" spring-boot-app-manifests/deployment.yml || true
 
-                            ls -la spring-boot-app-manifests/
+                        echo ""
+                        echo "Updating image to:"
+                        echo "${DOCKER_IMAGE}:${BUILD_NUMBER}"
 
-                            echo ""
-                            echo "Updating Docker image tag..."
+                        sed -i "s|image: .*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|g" \
+                            spring-boot-app-manifests/deployment.yml
 
-                            sed -i "s|image: .*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|" \
-                                spring-boot-app-manifests/deployment.yml
+                        echo ""
+                        echo "Updated image:"
+                        grep "image:" spring-boot-app-manifests/deployment.yml
 
-                            echo ""
-                            echo "Updated deployment:"
-                            cat spring-boot-app-manifests/deployment.yml
+                        git config user.email "jenkins@localhost"
+                        git config user.name "Jenkins"
 
-                            echo ""
-                            echo "Configuring Git..."
+                        git add spring-boot-app-manifests/deployment.yml
 
-                            git config user.name "Jenkins"
-                            git config user.email "jenkins@localhost"
+                        git commit \
+                            -m "Update Spring Boot image to ${BUILD_NUMBER} [skip ci]" \
+                            || echo "No changes to commit"
 
-                            echo ""
-                            echo "Adding deployment file..."
+                        git push \
+                            https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/${GIT_USERNAME}/java-maven-sonar-argocd.git \
+                            HEAD:main
 
-                            git add spring-boot-app-manifests/deployment.yml
-
-                            echo ""
-                            echo "Creating commit..."
-
-                            git diff --cached --quiet || \
-                                git commit \
-                                -m "Update Spring Boot image tag to ${BUILD_NUMBER} [skip ci]"
-
-                            echo ""
-                            echo "Pushing changes to GitHub..."
-
-                            git push \
-                                https://${GITHUB_TOKEN}@github.com/shaunjohn-04/java-maven-sonar-argocd.git \
-                                HEAD:main
-
-                            echo ""
-                            echo "Kubernetes deployment updated successfully."
-                        '''
-                    }
+                        echo ""
+                        echo "Kubernetes deployment file updated successfully."
+                    '''
                 }
             }
         }
     }
 
     post {
-
         success {
             echo '========================================='
             echo 'PIPELINE COMPLETED SUCCESSFULLY'
             echo '========================================='
-
-            echo "Docker Image: ${DOCKER_IMAGE}:${BUILD_NUMBER}"
         }
 
         failure {
             echo '========================================='
             echo 'PIPELINE FAILED'
             echo '========================================='
-
             echo 'Check the stage logs above.'
         }
 
         always {
             echo 'Cleaning Jenkins workspace...'
-
             cleanWs()
         }
     }

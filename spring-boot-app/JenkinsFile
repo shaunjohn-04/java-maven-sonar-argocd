@@ -28,8 +28,17 @@ pipeline {
                     echo "Current directory:"
                     pwd
 
+                    echo ""
                     echo "Project files:"
                     ls -la
+
+                    echo ""
+                    echo "Spring Boot project:"
+                    ls -la spring-boot-app
+
+                    echo ""
+                    echo "Kubernetes manifests:"
+                    ls -la spring-boot-app-manifests
                 '''
             }
         }
@@ -41,16 +50,24 @@ pipeline {
                 echo '========================================='
 
                 sh '''
+                    set -e
+
                     cd spring-boot-app
 
                     echo "Maven version:"
                     mvn --version
 
+                    echo ""
                     echo "Building application..."
 
                     mvn clean package
 
+                    echo ""
                     echo "Build completed successfully."
+
+                    echo ""
+                    echo "Generated JAR files:"
+                    ls -lh target/
                 '''
             }
         }
@@ -63,14 +80,17 @@ pipeline {
 
                 withSonarQubeEnv('sonarqube') {
                     sh '''
+                        set -e
+
                         cd spring-boot-app
 
                         mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.1.0.4751:sonar \
                             -Dsonar.projectKey=spring-boot-app \
                             -Dsonar.projectName="Spring Boot App" \
-                            -Dsonar.host.url=$SONAR_HOST_URL
+                            -Dsonar.host.url="$SONAR_HOST_URL"
 
-                        echo "SonarQube analysis completed."
+                        echo ""
+                        echo "SonarQube analysis completed successfully."
                     '''
                 }
             }
@@ -83,6 +103,8 @@ pipeline {
                 echo '========================================='
 
                 sh '''
+                    set -e
+
                     echo "Building Docker image..."
 
                     docker build \
@@ -90,8 +112,11 @@ pipeline {
                         -t ${DOCKER_IMAGE}:latest \
                         spring-boot-app
 
+                    echo ""
                     echo "Docker image built successfully."
 
+                    echo ""
+                    echo "Docker images:"
                     docker images | grep spring-boot-app || true
                 '''
             }
@@ -104,6 +129,7 @@ pipeline {
                 echo '========================================='
 
                 script {
+
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'docker-cred',
@@ -111,23 +137,32 @@ pipeline {
                             passwordVariable: 'DOCKER_PASSWORD'
                         )
                     ]) {
+
                         sh '''
+                            set -e
+
                             echo "Logging in to Docker Hub..."
 
                             echo "$DOCKER_PASSWORD" | docker login \
                                 -u "$DOCKER_USERNAME" \
                                 --password-stdin
 
+                            echo ""
                             echo "Pushing version ${BUILD_NUMBER}..."
 
                             docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
 
+                            echo ""
                             echo "Pushing latest..."
 
                             docker push ${DOCKER_IMAGE}:latest
 
+                            echo ""
+                            echo "Logging out from Docker Hub..."
+
                             docker logout
 
+                            echo ""
                             echo "Docker images pushed successfully."
                         '''
                     }
@@ -137,22 +172,33 @@ pipeline {
 
         stage('Update Kubernetes Deployment') {
             steps {
+
                 echo '========================================='
                 echo 'Updating Kubernetes Deployment'
                 echo '========================================='
 
                 script {
+
+                    /*
+                     * IMPORTANT:
+                     *
+                     * github-credentials is a
+                     * "Username with password" credential.
+                     *
+                     * Therefore we MUST use usernamePassword()
+                     * instead of string().
+                     */
+
                     withCredentials([
-                        string(
+                        usernamePassword(
                             credentialsId: 'github-credentials',
-                            variable: 'GITHUB_TOKEN'
+                            usernameVariable: 'GITHUB_USERNAME',
+                            passwordVariable: 'GITHUB_TOKEN'
                         )
                     ]) {
 
                         sh '''
                             set -e
-
-                            cd "$WORKSPACE"
 
                             echo "Current directory:"
                             pwd
@@ -195,6 +241,9 @@ pipeline {
 
                             else
 
+                                echo ""
+                                echo "Committing deployment update..."
+
                                 git commit \
                                     -m "Update Spring Boot image tag to ${BUILD_NUMBER} [skip ci]"
 
@@ -202,7 +251,7 @@ pipeline {
                                 echo "Pushing changes to GitHub..."
 
                                 git push \
-                                    https://${GIT_USER_NAME}:${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git \
+                                    https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${GIT_REPO_NAME}.git \
                                     HEAD:main
 
                                 echo ""
@@ -229,6 +278,7 @@ pipeline {
             echo 'PIPELINE FAILED'
             echo '========================================='
             echo 'Check the stage logs above.'
+            echo '========================================='
         }
 
         always {
@@ -237,6 +287,7 @@ pipeline {
         }
     }
 }
+
 
 
 

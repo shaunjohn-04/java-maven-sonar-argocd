@@ -1,4 +1,5 @@
 
+
 pipeline {
 
     agent {
@@ -16,6 +17,10 @@ pipeline {
 
     stages {
 
+        // =====================================================
+        // CHECKOUT
+        // =====================================================
+
         stage('Checkout') {
             steps {
                 echo '========================================='
@@ -31,17 +36,14 @@ pipeline {
                     echo ""
                     echo "Project files:"
                     ls -la
-
-                    echo ""
-                    echo "Spring Boot project:"
-                    ls -la spring-boot-app
-
-                    echo ""
-                    echo "Kubernetes manifests:"
-                    ls -la spring-boot-app-manifests
                 '''
             }
         }
+
+
+        // =====================================================
+        // BUILD AND TEST
+        // =====================================================
 
         stage('Build and Test') {
             steps {
@@ -64,13 +66,14 @@ pipeline {
 
                     echo ""
                     echo "Build completed successfully."
-
-                    echo ""
-                    echo "Generated JAR files:"
-                    ls -lh target/
                 '''
             }
         }
+
+
+        // =====================================================
+        // SONARQUBE ANALYSIS
+        // =====================================================
 
         stage('SonarQube Analysis') {
             steps {
@@ -79,10 +82,13 @@ pipeline {
                 echo '========================================='
 
                 withSonarQubeEnv('sonarqube') {
+
                     sh '''
                         set -e
 
                         cd spring-boot-app
+
+                        echo "Running SonarQube scanner..."
 
                         mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.1.0.4751:sonar \
                             -Dsonar.projectKey=spring-boot-app \
@@ -90,11 +96,16 @@ pipeline {
                             -Dsonar.host.url="$SONAR_HOST_URL"
 
                         echo ""
-                        echo "SonarQube analysis completed successfully."
+                        echo "SonarQube analysis completed."
                     '''
                 }
             }
         }
+
+
+        // =====================================================
+        // BUILD DOCKER IMAGE
+        // =====================================================
 
         stage('Build Docker Image') {
             steps {
@@ -121,6 +132,11 @@ pipeline {
                 '''
             }
         }
+
+
+        // =====================================================
+        // PUSH DOCKER IMAGE
+        // =====================================================
 
         stage('Push Docker Image') {
             steps {
@@ -170,36 +186,39 @@ pipeline {
             }
         }
 
+
+        // =====================================================
+        // UPDATE KUBERNETES DEPLOYMENT
+        // =====================================================
+
         stage('Update Kubernetes Deployment') {
             steps {
-
                 echo '========================================='
                 echo 'Updating Kubernetes Deployment'
                 echo '========================================='
 
                 script {
 
-                    /*
-                     * IMPORTANT:
-                     *
-                     * github-credentials is a
-                     * "Username with password" credential.
-                     *
-                     * Therefore we MUST use usernamePassword()
-                     * instead of string().
-                     */
-
                     withCredentials([
-                        usernamePassword(
+                        string(
                             credentialsId: 'github-credentials',
-                            usernameVariable: 'GITHUB_USERNAME',
-                            passwordVariable: 'GITHUB_TOKEN'
+                            variable: 'GITHUB_TOKEN'
                         )
                     ]) {
 
                         sh '''
                             set -e
 
+                            echo "Adding Jenkins workspace to Git safe directories..."
+
+                            git config --global --add safe.directory "$WORKSPACE"
+
+                            echo ""
+                            echo "Changing to Jenkins workspace..."
+
+                            cd "$WORKSPACE"
+
+                            echo ""
                             echo "Current directory:"
                             pwd
 
@@ -237,12 +256,13 @@ pipeline {
 
                             if git diff --cached --quiet; then
 
+                                echo ""
                                 echo "No changes to commit."
 
                             else
 
                                 echo ""
-                                echo "Committing deployment update..."
+                                echo "Committing changes..."
 
                                 git commit \
                                     -m "Update Spring Boot image tag to ${BUILD_NUMBER} [skip ci]"
@@ -251,7 +271,7 @@ pipeline {
                                 echo "Pushing changes to GitHub..."
 
                                 git push \
-                                    https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME}/${GIT_REPO_NAME}.git \
+                                    "https://${GIT_USER_NAME}:${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git" \
                                     HEAD:main
 
                                 echo ""
@@ -264,6 +284,11 @@ pipeline {
             }
         }
     }
+
+
+    // =====================================================
+    // POST ACTIONS
+    // =====================================================
 
     post {
 
@@ -287,6 +312,7 @@ pipeline {
         }
     }
 }
+
 
 
 

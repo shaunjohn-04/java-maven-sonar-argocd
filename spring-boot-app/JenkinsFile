@@ -164,66 +164,62 @@ pipeline {
 
 
         stage('Update Kubernetes Deployment') {
-            steps {
-                echo '========================================='
-                echo 'Updating Kubernetes Deployment'
-                echo '========================================='
+    steps {
+        script {
+            withCredentials([
+                string(credentialsId: 'github', variable: 'GITHUB_TOKEN')
+            ]) {
+                sh '''
+                    set -e
 
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: "${GITHUB_CREDENTIALS}",
-                        usernameVariable: 'GITHUB_USERNAME',
-                        passwordVariable: 'GITHUB_TOKEN'
-                    )
-                ]) {
+                    echo "========================================="
+                    echo "Updating Kubernetes Deployment"
+                    echo "========================================="
 
-                    sh '''
-                        echo "Checking deployment file..."
+                    cd "$WORKSPACE"
 
-                        ls -la spring-boot-app-manifests/
+                    echo "Current directory:"
+                    pwd
 
-                        echo ""
-                        echo "Deployment before update:"
+                    echo "Git status:"
+                    git status
 
-                        cat spring-boot-app-manifests/deployment.yml
+                    echo "Deployment before update:"
+                    cat spring-boot-app-manifests/deployment.yml
 
-                        echo ""
-                        echo "Updating Docker image..."
+                    echo "Updating Docker image..."
 
-                        sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|g" \
-                            spring-boot-app-manifests/deployment.yml
+                    sed -i "s|image: .*|image: shaunjohnmathew/spring-boot-app:${BUILD_NUMBER}|g" \
+                        spring-boot-app-manifests/deployment.yml
 
-                        echo ""
-                        echo "Deployment after update:"
+                    echo "Deployment after update:"
+                    cat spring-boot-app-manifests/deployment.yml
 
-                        cat spring-boot-app-manifests/deployment.yml
+                    echo "Configuring Git..."
 
-                        echo ""
-                        echo "Configuring Git..."
+                    git config user.name "Jenkins"
+                    git config user.email "jenkins@localhost"
 
-                        git config user.name "Jenkins"
-                        git config user.email "jenkins@localhost"
+                    git add spring-boot-app-manifests/deployment.yml
 
-                        git add spring-boot-app-manifests/deployment.yml
+                    if git diff --cached --quiet; then
+                        echo "No changes to commit."
+                    else
+                        git commit -m "Update Spring Boot image tag to ${BUILD_NUMBER} [skip ci]"
 
-                        git commit \
-                            -m "Update Spring Boot image to ${BUILD_NUMBER} [skip ci]" \
-                            || echo "No changes to commit"
-
-                        echo ""
                         echo "Pushing deployment update to GitHub..."
 
                         git push \
-                            https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/shaunjohn-04/java-maven-sonar-argocd.git \
+                            https://${GIT_USER_NAME}:${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git \
                             HEAD:main
+                    fi
 
-                        echo ""
-                        echo "Kubernetes deployment file updated successfully."
-                    '''
-                }
+                    echo "Deployment file updated successfully."
+                '''
             }
         }
     }
+}
 
 
     post {
